@@ -1,16 +1,11 @@
 import re
-from urllib.parse import urlparse, parse_qs, urlsplit
-from pprint import pprint
 
 import scrapy
 from lxml import etree
-from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
 
 from gen_book_rule import constant
-from gen_book_rule.spiders.page_operate import WebPage
-from gen_book_rule.utils import get_prefix_url, url_join, get_html_element_info
-from gen_book_rule.website_parse import WebsiteParse
+from gen_book_rule.utils import get_prefix_url, url_join
+from gen_book_rule.spiders.website_parse import WebsiteParse
 
 
 class WebsiteSpiderSpider(scrapy.Spider):
@@ -29,7 +24,10 @@ class WebsiteSpiderSpider(scrapy.Spider):
         self.website_list = False
         # self.start_urls = ['https://www.baidu.com/s?ie=UTF-8&wd=小说网站']
         self.start_urls = ['http://www.ibiqu.net/']
+        self.start_urls = ['https://www.23us.cc/']
         self.search_keywords = constant.search_keywords
+        self.website = None
+        self.content_pages = [""] * 5
         super().__init__(*args, **kwargs)
         self.rule_template = {
             "bookSourceGroup": "书源分组",
@@ -149,57 +147,81 @@ class WebsiteSpiderSpider(scrapy.Spider):
                                  headers=constant.headers, callback=self.parse_novel_home_page)
 
     def parse_novel_home_page(self, response):
-        website = WebsiteParse(response.request.url)
-        website.parse_basic(response.text)
-        search_url = website.rule_dict.get("searchUrl")
-        search_url = search_url.replace("{{key}}", self.search_keywords[0].get("book_name"))
-        yield scrapy.Request(url=search_url,
-                             meta={"website": website,
-                                   "search_info": self.search_keywords[0],
-                                   "search_index": 0,
-                                   },
-                             headers=constant.headers,
-                             callback=self.parse_novel_search_page)
+        with open("gen_book_rule/pages/home_page.html", "wb") as f:
+            f.write(response.body)
+        self.website = WebsiteParse(response.request.url)
+        self.website.parse_basic(response.text)
+        print(self.website.rule_dict)
+        yield self.get_search_request_obj(self.search_keywords[0].get("book_name"),
+                                          meta={"search_info": self.search_keywords[0],
+                                                "search_index": 0},
+                                          encoding=response.encoding)
+
+    def get_search_request_obj(self, keyword, **kwargs):
+        search_url = self.website.rule_dict.get("searchUrl")
+        if '"method": "' in search_url:
+            request_url = search_url.split(",", maxsplit=1)[0]
+            result = re.search(r'"body": "(?P<field_name>.*?)="', search_url)
+            field_name = result.group("field_name")
+            return scrapy.FormRequest(url=request_url,
+                                      formdata={field_name: keyword},
+                                      headers=constant.headers,
+                                      callback=self.parse_novel_search_page,
+                                      **kwargs)
+        else:
+            request_url = search_url.replace("{{key}}", keyword)
+            return scrapy.Request(url=request_url,
+                                  headers=constant.headers,
+                                  callback=self.parse_novel_search_page,
+                                  **kwargs)
 
     def parse_novel_search_page(self, response):
         with open("gen_book_rule/pages/search_page.html", "wb") as f:
             f.write(response.body)
-        website: WebsiteParse = response.meta.get("website")
         search_info = response.meta.get("search_info")
         search_index = response.meta.get("search_index")
-        result = website.parse_search(response.text, search_info)
+        result = self.website.parse_search(response.text, search_info)
         if result is False and search_index < len(self.search_keywords) - 1:
-            search_url = website.rule_dict.get("searchUrl")
-            search_url = search_url.replace("{{key}}", self.search_keywords[search_index + 1].get("book_name"))
-            yield scrapy.Request(url=search_url,
-                                 meta={"website": website,
-                                       "search_info": self.search_keywords[search_index + 1],
-                                       "search_index": search_index + 1,
-                                       },
-                                 headers=constant.headers,
-                                 callback=self.parse_novel_search_page)
+            yield self.get_search_request_obj(self.search_keywords[search_index + 1].get("book_name"),
+                                              meta={"search_info": self.search_keywords[search_index + 1],
+                                                    "search_index": search_index + 1,
+                                                    },
+                                              encoding=response.encoding)
         elif result is True:
-            yield scrapy.Request(url=website.book_info_page_url,
-                                 meta={"website": website,
-                                       "search_info": self.search_keywords[search_index + 1],
+            yield scrapy.Request(url=self.website.book_info_page_url,
+                                 meta={"search_info": self.search_keywords[search_index + 1],
                                        "search_index": search_index + 1,
                                        },
                                  headers=constant.headers,
                                  callback=self.parse_book_info_page)
-        print(website.rule_dict)
+        print(self.website.rule_dict)
         return
 
     def parse_book_info_page(self, response):
         with open("gen_book_rule/pages/book_info_page.html", "wb") as f:
             f.write(response.body)
-        website: WebsiteParse = response.meta.get("website")
-        website.parse_book_info(response.text)
-        website.parse_toc(response.text)
-        print(website.rule_dict)
+        self.website.parse_book_info(response.text)
+        self.website.chapter_list_page_url = response.request.url
+        self.website.parse_toc(response.text)
+        print(self.website.rule_dict)
+        yield scrapy.Request(url=self.website.content_pages_url[0],
+                             meta={"page_index": 0},
+                             headers=constant.headers,
+                             callback=self.parse_content_page)
 
-    def parse_content_page(self):
-
-        pass
+    def parse_content_page(self, response):
+        page_index = response.meta.get("page_index")
+        with open(f"gen_book_rule/pages/content_page_{page_index}.html", "wb") as f:
+            f.write(response.body)
+        self.content_pages[page_index] = response.text
+        if "" not in self.content_pages:
+            self.website.parse_content(self.content_pages)
+            print(self.website.rule_dict)
+        else:
+            yield scrapy.Request(url=self.website.content_pages_url[page_index + 1],
+                                 meta={"page_index": page_index + 1},
+                                 headers=constant.headers,
+                                 callback=self.parse_content_page)
 
     def find_search_site(self, response):
         # search_info = dict()

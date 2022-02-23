@@ -11,14 +11,14 @@ def get_prefix_url(url):
 
 
 def url_join(base, url):
-    url1 = urljoin(base, url)
-    arr = urlparse(url1)
-    path = normpath(arr[2])
-    return urlunparse((arr.scheme, arr.netloc, path, arr.params, arr.query, arr.fragment))
+    return urljoin(base, url)
+    # arr = urlparse(url1)
+    # path = normpath(arr[2])
+    # return urlunparse((arr.scheme, arr.netloc, path, arr.params, arr.query, arr.fragment))
 
 
 def get_html_element_info(html_text, xpath_str):
-    html = etree.HTML(html_text)
+    html = etree.HTML(html_text, parser=etree.HTMLParser())
     return html.xpath(xpath_str)
 
 

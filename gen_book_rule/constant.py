@@ -23,7 +23,7 @@ novel_website_exclude_keywords = ["贴吧", "网址", "导航", "百科", "推�
 input_box_type_list = ["text", "search"]
 
 search_keywords = [
-    {"book_name": "完美世界", "author": "辰东", "fuzzy_search": False},
+    {"book_name": "完美世界", "author": "辰东", "fuzzy_search": False, "intro_max_length": 100, "intro_min_length": 60},
     {"book_name": "吞噬星空", "author": "我吃西红柿", "fuzzy_search": False},
     {"book_name": "校花的贴身高手", "author": "鱼人二代", "fuzzy_search": False},
 ]

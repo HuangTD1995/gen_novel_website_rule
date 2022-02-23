@@ -21,7 +21,9 @@ class WebsiteParse:
         self.novel_info_page = None
         self.chapter_list_page = None
         self.detail_page = None
+        self.chapter_list_page_url = None
         self.content_pages = list()
+        self.content_pages_url = list()
 
         self.title = None
         self.search_info = None
@@ -113,9 +115,9 @@ class WebsiteParse:
         self.rule_dict["ruleBookInfo"]["kind"] = ""
         pass
 
-    def __parse_book_content_rule(self):
+    def __parse_book_content_rule_new(self):
         """获取小说正文"""
-        limit_rate = 0.3  # 权重
+        limit_rate = 0.5  # 权重
         content_xpath_list = list()
         for content_page in self.content_pages:
             nodes = get_html_element_info(content_page, '//*')  # 获取所有节点
@@ -133,7 +135,7 @@ class WebsiteParse:
                 # 遍历所有节点，获取所有节点对应的字符长度，并且通过最长字符长度的标签判断为内容标签
                 for node in nodes:
                     if temp_xpath != '.':
-                        temp_str = temp_xpath.rstrip('/*')
+                        temp_str = temp_xpath.rstrip('/node()')
                         upper_node = node.xpath(temp_str)
                         if upper_node in node_list:
                             continue
@@ -173,13 +175,72 @@ class WebsiteParse:
         else:
             # 对n篇文章遍历之后获取最多数量的节点的xpath
             content_xpath = Counter(content_xpath_list).most_common()[0][0]
-            self.rule_dict["ruleBookContent"] = content_xpath
+            self.rule_dict["ruleContent"]["content"] = content_xpath
+
+    def __parse_book_content_rule(self):
+        limit_rate = 0.3
+        exclude_tags = ["script", "style", "option", "img", "input"]
+        max_node_dict = dict()
+        for page in self.content_pages:
+            # 获取html所有显示文本
+            filter_list = list()
+            for tag in exclude_tags:
+                filter_list.append(f"not(name()='{tag}')")
+            filter_str = " and ".join(filter_list)
+            all_text_length = len("".join(get_html_element_info(page, f"/html/body//*[{filter_str}]/text()")))
+
+            print(f"all_text_length={all_text_length}")
+            # 获取所有节点
+            ele_list = get_html_element_info(page, f"/html/body//*[{filter_str}]")
+            # 排除节点text为空的标签
+            temp_ele_list = list()
+            for ele in ele_list:
+                if ele.text:
+                    temp_ele_list.append(ele)
+            ele_list = temp_ele_list
+            del temp_ele_list
+            # 判断是否有标签的文本超过对应比率，没有则循环遍历其父节点继续判定父节点下所有该类型的标签的文本是否超过对应比率
+            for index in range(5):  # 向上回溯几级父节点
+                max_text_length = 0
+                content_xpath = ""
+                for ele in ele_list:
+                    if index == 0:
+                        ele_text = ele.text
+                        ele_xpath = f"{get_full_xpath(ele)}/text()"
+                    else:
+                        # 获取父节点下对应标签的所有文本
+                        full_xpath = get_full_xpath(ele)
+                        ele_xpath = f"{full_xpath}/{'../'*index}{'node()/'*(index-1)}{ele.tag}/text()"
+                        ele_text = "".join(get_html_element_info(page, ele_xpath))
+                    if len(ele_text) > max_text_length:
+                        max_text_length = len(ele_text)
+                        content_xpath = ele_xpath
+                print(f"content_xpath={content_xpath}")
+                print(f"max_text_length={max_text_length}")
+                # 判断最长文本长度是否超过所有文本的指定比例
+                if max_text_length > all_text_length * limit_rate:
+                    if max_node_dict.get(content_xpath) is None:
+                        max_node_dict[content_xpath] = 1
+                    else:
+                        max_node_dict[content_xpath] += 1
+                    break
+
+        # 选择出现最多的一个规则
+        if len(max_node_dict) == 0:
+            print("解析content规则失败")
+            return False
+        max_count = 0
+        for xpath_str, num in max_node_dict.items():
+            if num > max_count:
+                self.rule_dict["ruleContent"]["content"] = xpath_str
+        return True
 
     def __parse_category_rule(self):
         """分类规则"""
         pass
 
     def __parse_book_name_rule(self):
+        book_name = self.search_info.get("book_name")
         # 获取最大的标题标签中的文本即书名
         level_list = [1, 2, 3]
         for level in level_list:
@@ -187,14 +248,19 @@ class WebsiteParse:
             xpath_str = f"//{tag_name}"
             results = get_html_element_info(self.detail_page, xpath_str)
             if len(results) == 1:
-                if results[0].text == self.search_info.get("book_name"):
+                if results[0].text == book_name:
                     full_xpath = get_full_xpath(results[0])
-                    self.rule_dict["ruleBookName"] = f"{full_xpath}/text()"
-                    break
-        else:
-            print("获取book info书名失败")
-            return False
-        return True
+                    self.rule_dict["ruleBookInfo"]["name"] = f"{full_xpath}/text()"
+                    return True
+        # 查找整个文档中所有的文本匹配书名
+        ele_list = get_html_element_info(self.detail_page, f"/html/body//*[text()='{book_name}']")
+        if len(ele_list) == 1:
+            full_xpath = get_full_xpath(ele_list[0])
+            self.rule_dict["ruleBookInfo"]["name"] = f"{full_xpath}/text()"
+            return True
+        print("获取book info书名失败")
+        self.rule_dict["ruleBookInfo"]["name"] = ""
+        return False
 
     def __parse_book_detail_info_rule(self):
         """"""
@@ -202,16 +268,21 @@ class WebsiteParse:
 
     def __parse_book_chapter_list_rule(self):
         """章节目录列表规则"""
-        limit_rate = 0.8  # 权重
-
+        limit_rate = 0.25  # 权重 TODO 需要对目录有分页的进一步处理
+        # 获取页面的所有a标签的数量
         a_number = len(get_html_element_info(self.chapter_list_page, '//a'))
+        # 获取所有a标签的父节点
         upper_xpath = '//a/..'
         upper_nodes = get_html_element_info(self.chapter_list_page, upper_xpath)
+        xpath_str = ""
         for index in range(4):
+            # 获取a标签最多的上级节点
             max_node, max_length, a_list, temp_xpath = self.get_max_num_node(index, upper_nodes)
             if max_length > int(limit_rate * a_number):
+                p_xpath = get_full_xpath(max_node)
                 a_length = len(a_list)
                 if a_length > 20:
+                    # 获取最多的一个相对子级标签xpath
                     select_node = a_list[int(a_length / 2) - 10:int(a_length / 2) + 10]
                     xpath_list = list()
                     for node in select_node:
@@ -222,9 +293,10 @@ class WebsiteParse:
                             p_xpath = f'{p_tag}/{p_xpath}' if p_xpath else p_tag
                         xpath_list.append(f'/{p_xpath}')
                     t_xpath = Counter(xpath_list).most_common()[0][0]
+                    xpath_str = f"{p_xpath}{t_xpath}/a"
                 else:
-                    t_xpath = '/*' * index
-                xpath_str = get_full_xpath(max_node)
+                    t_xpath = '/node()' * index
+                    xpath_str = f"{p_xpath}{t_xpath}/a"
                 break
             upper_xpath = f'{upper_xpath}/..'
             upper_nodes = get_html_element_info(self.chapter_list_page, upper_xpath)
@@ -232,9 +304,12 @@ class WebsiteParse:
             print('get titles failed')
             return False
         # TODO 需要去重，即前几张可能是最新章节，也就是最后几张
-        self.rule_dict["ruleToc"]["chapterList"] = f'{xpath_str}{t_xpath}/a'
-        self.rule_dict["ruleToc"]["chapterName"] = f'{xpath_str}{t_xpath}/a/text()'
-        self.rule_dict["ruleToc"]["chapterUrl"] = f'{xpath_str}{t_xpath}/a/@href'
+        # ret = get_html_element_info(self.chapter_list_page, f'{xpath_str}/text()')
+        self.rule_dict["ruleToc"]["chapterList"] = xpath_str
+        self.rule_dict["ruleToc"]["chapterName"] = f'{xpath_str}/text()'
+        self.rule_dict["ruleToc"]["chapterUrl"] = f'{xpath_str}/@href'
+        self.content_pages_url = [url_join(self.chapter_list_page_url, href) for href in
+                                  get_html_element_info(self.chapter_list_page, f'{xpath_str}/@href')[-5:]]
         return True
 
     def __parse_book_chapter_name_rule(self):
@@ -243,13 +318,36 @@ class WebsiteParse:
 
     def __parse_book_chapter_url_rule(self):
         """获取章节内容url"""
-
         pass
 
     def __parse_book_next_chapter_rule(self):
         """获取下一章url规则"""
+        self.rule_dict["ruleContent"]["nextContentUrl"] = ""
         # 使用解析章节列表时得到的url与章节详情里面a标签的url进行匹配得到下一章的a标签位置
-        pass
+        # 获取所有a标签
+        ele_list = get_html_element_info(self.content_pages[0], "//a")
+        # 解析下一章规则
+        for ele in ele_list:
+            href = ele.get("href")
+            if not href:
+                continue
+            # 判断链接是否匹配
+            if href.startswith("http://") or href.startswith("https://"):
+                if href in self.content_pages_url:
+                    self.rule_dict["ruleContent"]["nextContentUrl"] = f"{get_full_xpath(ele)}/@href"
+                    return True
+            else:
+                for page_url in self.content_pages_url:
+                    if page_url.endswith(href):
+                        self.rule_dict["ruleContent"]["nextContentUrl"] = f"{get_full_xpath(ele)}/@href"
+                        return True
+        # 没有下一章则解析下一页等类的规则
+        for ele in ele_list:
+            if ele.text.startswith("下一"):
+                self.rule_dict["ruleContent"]["nextContentUrl"] = f"{get_full_xpath(ele)}/@href"
+                return True
+        print("解析content页面")
+        return False
 
     def __parse_find_rule(self):
         pass
@@ -257,12 +355,29 @@ class WebsiteParse:
     def __parse_book_introduce_rule(self):
         """简介规则"""
         self.rule_dict["ruleBookInfo"]["intro"] = ""
-        pass
+        max_length = self.search_info.get("intro_max_length")
+        min_length = self.search_info.get("intro_min_length")
+        book_name_xpath = self.rule_dict["ruleBookInfo"]["name"]
+        if max_length is not None and min_length is not None:
+            # 获取书名节点
+            node = get_html_element_info(self.detail_page, book_name_xpath)[0]
+            # 查找其父节点下所有节点文本符合长度的节点
+            for _ in range(1, 3):
+                parent_node = node.getparent()
+                ele_list = parent_node.xpath(
+                    f"//*[string-length(text())<{max_length} and string-length(text())>{min_length}]")
+                if len(ele_list) == 1:
+                    self.rule_dict["ruleBookInfo"]["intro"] = f"{get_full_xpath(ele_list[0])}/text()"
+                elif len(ele_list) == 0:
+                    node = parent_node
+                    continue
+                return
+        return
 
     def __parse_book_cover_url_rule(self):
         """详情页书籍封面规则"""
         # 获取标题xpath
-        title_xpath = self.rule_dict["ruleBookName"].replace("/text()", "")
+        title_xpath = self.rule_dict["ruleBookInfo"]["name"].replace("/text()", "")
         node = get_html_element_info(self.detail_page, title_xpath)[0]
         # 通过标题xpath获取其父节点，通过父节点查找所有子节点中的img标签
         for index in range(1, 10):
@@ -285,7 +400,7 @@ class WebsiteParse:
                     if width and height:
                         width = re.sub(r"[^0-9]{1,4}", "", str(width))
                         height = re.sub(r"[^0-9]{1,4}", "", str(height))
-                        if int(width)>100 and int(height) > 100:
+                        if int(width) > 100 and int(height) > 100:
                             count += 1
                             img_node = node
                 if count == 1:
@@ -301,6 +416,15 @@ class WebsiteParse:
     def __parse_book_last_chapter_rule(self):
         """详情页最新章节规则"""
         self.rule_dict["ruleBookInfo"]["lastChapter"] = ""
+        # 获取以最新章节：开头的标签下的a标签
+        ele_list = get_html_element_info(self.detail_page, "//*[starts-with(string(.), '最新章节')]//a")
+        if len(ele_list) == 1:
+            self.rule_dict["ruleBookInfo"]["lastChapter"] = f"{get_full_xpath(ele_list[0])}/@href"
+            return True
+        # a标签唯一则就是最新章节标签
+        if len(ele_list) == 1:
+            self.rule_dict["ruleBookInfo"]["lastChapter"] = f"{get_full_xpath(ele_list[0])}/@href"
+            return True
         # 获取最新章节文本所在标签，查找其子标签是否有a标签
         xpath = "//*[contains(text(), '最新章节：')]//a"
         ele_list = get_html_element_info(self.detail_page, xpath)
@@ -423,7 +547,7 @@ class WebsiteParse:
             # 获取请求方式
             result = get_html_element_info(self.home_page, f"{form_xpath}/@method")
             if len(result) == 0:
-                request_method = "post"
+                request_method = "get"
             else:
                 request_method = result[0]
             # 获取请求地址
@@ -432,8 +556,11 @@ class WebsiteParse:
                 print("获取action url失败")
                 return False
             full_url = self.get_full_url(self.url, result[0])
-            field_name = get_html_element_info(self.home_page, f"{search_xpath}/@name")
-            search_url = f'{full_url},{{\n  "method": "{request_method}",\n  "body": "{field_name}={{{{key}}}}"}}'
+            field_name = get_html_element_info(self.home_page, f"{search_xpath}/@name")[0]
+            if request_method == "post":
+                search_url = f'{full_url},{{\n  "method": "{request_method}",\n  "body": "{field_name}={{{{key}}}}"}}'
+            else:
+                search_url = f"{full_url}?{field_name}={{{{key}}}}"
         else:
             # 非表单提交处理
             # 完整页面和原始页面有差别，进行定位需要使用各种属性完整定位或直接使用哦个完整页面进行解析
@@ -518,7 +645,6 @@ class WebsiteParse:
                     nodes = get_html_element_info(html_text, f"//form/*/input[@type='{tag_type}']")
                     for node in nodes:
                         attrs_value_str = "".join(node.values())
-                        print(node.itertext().__dir__())
                         for keyword in keywords:
                             if keyword in attrs_value_str:
                                 return get_full_xpath(node), is_selenium
@@ -536,16 +662,17 @@ class WebsiteParse:
         full_xpath = get_full_xpath(ele)
         # td tr标签；如果是td tr标签，则，tr[1]就为表头，结果应该从[2]开始
         if "td" in full_xpath and "tr" in full_xpath:
-            if self.__analyze_search_list_tr_td_tag(ele, full_xpath) is True:
+            if self.__analyze_search_list_tr_td_tag(full_xpath) is True:
                 return True
         # ul li标签， ul为行，li为列
         if "ul" in full_xpath and "li" in full_xpath:
-            if self.__analyze_search_list_ul_li_tag(ele) is True:
+            if self.__analyze_search_list_ul_li_tag(full_xpath) is True:
                 return True
         # div标签， 第一个和后面的规则不一致的标签（这个规则的网站不管）
         return self.__analyze_search_list_div_tag(ele)
 
-    def __analyze_search_list_tr_td_tag(self, element, full_xpath):
+    def __analyze_search_list_tr_td_tag(self, full_xpath):
+        # tr为行标签，td为列标签
         # 目录为tr[0], 列表项为position()>1
         list_xpath = re.sub(r"tr\[[0-9]{1,3}]", "tr[position()>1]", full_xpath)
         if len(get_html_element_info(self.search_page, list_xpath)) > 0:
@@ -564,13 +691,14 @@ class WebsiteParse:
         for index, ele in enumerate(ele_list):
             # 分类
             if "分类" in ele.text or "类别" in ele.text:
-                kind_index += index+1
+                kind_index += index + 1
                 continue
             # 简介
             if "简介" in ele.text or "介绍" in ele.text or "描述" in ele.text:
                 intro_index += index + 1
                 continue
-            if "作者" in ele.text:
+            # 作者
+            if "作者" in ele.text or ("作" in ele.text and "者" in ele.text):
                 author_index += index + 1
                 continue
 
@@ -594,8 +722,85 @@ class WebsiteParse:
             self.rule_dict["ruleSearch"]["kind"] = f"{intro_xpath}/text()"
         return True
 
-    def __analyze_search_list_ul_li_tag(self, ele):
-        pass
+    def __analyze_search_list_ul_li_tag(self, full_xpath):
+        # 目录为//ul/li[1]，标题列表项为position()>1
+        head_xpath = re.sub(r"li\[[\d]{1,4}].*", "li[1]", full_xpath)
+        list_xpath = re.sub(r"li\[[\d]{1,4}]", "li[position()>1]", full_xpath)
+        if len(get_html_element_info(self.search_page, list_xpath)) > 0:
+            self.rule_dict["ruleSearch"]["bookList"] = list_xpath
+            self.rule_dict["ruleSearch"]["name"] = f"{list_xpath}/text()"
+            self.rule_dict["ruleSearch"]["bookUrl"] = f"{list_xpath}/@href"
+        else:
+            "获取bookList xpath失败"
+            return False
+        # 获取分析表头字段，从而获取对应字段的xpath
+        ele_list = get_html_element_info(self.search_page, head_xpath)
+        if len(ele_list) != 1:
+            print("获取表头字段索引失败")
+            return True
+
+        def check_finish():
+            if self.rule_dict["ruleSearch"].get("kind") is not None and \
+                    self.rule_dict["ruleSearch"].get("kind") is not None and \
+                    self.rule_dict["ruleSearch"].get("kind") is not None:
+                return True
+            return False
+
+        def check_xpath(xpath):
+            if len(get_html_element_info(self.search_page, xpath)) > 0:
+                return True
+            return False
+
+        for sub_ele in ele_list[0].iter():
+            if not sub_ele.text:
+                continue
+            # 分类
+            if self.rule_dict["ruleSearch"].get("kind") is None and ("分类" in sub_ele.text or "类别" in sub_ele.text):
+                sub_ele_full_xpath = get_full_xpath(sub_ele)
+                kind_xpath = re.sub(r"li\[[\d]{1,4}]", "li[position()>1]", sub_ele_full_xpath)
+                # 检测xpath正确性
+                for _ in range(3):
+                    if check_xpath(kind_xpath):
+                        break
+                    # xpath不正确则向父节点推
+                    kind_xpath = kind_xpath.rsplit("/", maxsplit=1)[0]
+                self.rule_dict["ruleSearch"]["kind"] = f"{kind_xpath}/text()"
+                if check_finish():
+                    break
+                continue
+            # 简介
+            if self.rule_dict["ruleSearch"].get("intro") is None and (
+                    "简介" in sub_ele.text or "介绍" in sub_ele.text or "描述" in sub_ele.text):
+                sub_ele_full_xpath = get_full_xpath(sub_ele)
+                intro_xpath = re.sub(r"li\[[\d]{1,4}]", "li[position()>1]", sub_ele_full_xpath)
+                # 检测xpath正确性
+                for _ in range(3):
+                    if check_xpath(intro_xpath):
+                        break
+                    # xpath不正确则向父节点推
+                    intro_xpath = intro_xpath.rsplit("/", maxsplit=1)[0]
+                self.rule_dict["ruleSearch"]["intro"] = f"{intro_xpath}/text()"
+                if check_finish():
+                    break
+                continue
+            # 作者
+            if self.rule_dict["ruleSearch"].get("author") is None and (
+                    "作者" in sub_ele.text or ("作" in sub_ele.text and "者" in sub_ele.text)):
+                sub_ele_full_xpath = get_full_xpath(sub_ele)
+                author_xpath = re.sub(r"li\[[\d]{1,4}]", "li[position()>1]", sub_ele_full_xpath)
+                # 检测xpath正确性
+                for _ in range(3):
+                    if check_xpath(author_xpath):
+                        break
+                    # xpath不正确则向父节点推
+                    author_xpath = author_xpath.rsplit("/", maxsplit=1)[0]
+                self.rule_dict["ruleSearch"]["author"] = f"{author_xpath}/text()"
+                if check_finish():
+                    break
+                continue
+        else:
+            print("获取搜索页分类，简介，作者字段失败")
+        return True
 
     def __analyze_search_list_div_tag(self, ele):
         pass
@@ -607,8 +812,9 @@ class WebsiteParse:
         a_list = None
         temp_xpath = ''
         for node in upper_nodes:
-            temp_xpath = ('./*' * index) if index != 0 else '.'
-            temp_a_list = node.xpath(f'{temp_xpath}/a')
+            temp_xpath = f"./{'node()/' * index}" if index != 0 else './'
+            # temp_xpath = f"{'../' * index}*" if index != 0 else '.'
+            temp_a_list = node.xpath(f'{temp_xpath}a')
             length = len(temp_a_list)
             if length > max_length:
                 max_length = length
