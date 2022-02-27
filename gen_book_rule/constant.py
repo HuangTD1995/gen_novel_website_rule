@@ -27,3 +27,5 @@ search_keywords = [
     {"book_name": "吞噬星空", "author": "我吃西红柿", "fuzzy_search": False},
     {"book_name": "校花的贴身高手", "author": "鱼人二代", "fuzzy_search": False},
 ]
+
+chrome_driver_path = "E:\\temp\\chromedriver_win32\\chromedriver.exe"

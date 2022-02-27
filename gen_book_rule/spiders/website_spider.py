@@ -24,7 +24,8 @@ class WebsiteSpiderSpider(scrapy.Spider):
         self.website_list = False
         # self.start_urls = ['https://www.baidu.com/s?ie=UTF-8&wd=小说网站']
         self.start_urls = ['http://www.ibiqu.net/']
-        self.start_urls = ['https://www.23us.cc/']
+        self.start_urls = ['https://www.wangshuge.com/']
+        # self.start_urls = ['https://www.23us.cc/']
         self.search_keywords = constant.search_keywords
         self.website = None
         self.content_pages = [""] * 5
@@ -104,7 +105,8 @@ class WebsiteSpiderSpider(scrapy.Spider):
             "ruleToc": {  # 目录页
                 "chapterList": "//*[@class='content']//li",
                 "chapterName": "//text()",
-                "chapterUrl": "//a[@itemprop='url']/@href"
+                "chapterUrl": "//a[@itemprop='url']/@href",
+                "nextTocUrl": ""  # 目录下一页，没有下一页则不用填
             },
             "ruleContent": {  # 正文页
                 "content": "//div[@itemprop='articleBody']//text()",
@@ -155,13 +157,14 @@ class WebsiteSpiderSpider(scrapy.Spider):
         yield self.get_search_request_obj(self.search_keywords[0].get("book_name"),
                                           meta={"search_info": self.search_keywords[0],
                                                 "search_index": 0},
-                                          encoding=response.encoding)
+                                          # encoding=response.encoding
+                                          )
 
     def get_search_request_obj(self, keyword, **kwargs):
         search_url = self.website.rule_dict.get("searchUrl")
         if '"method": "' in search_url:
             request_url = search_url.split(",", maxsplit=1)[0]
-            result = re.search(r'"body": "(?P<field_name>.*?)="', search_url)
+            result = re.search(r'"body": "(?P<field_name>.*?)=', search_url)
             field_name = result.group("field_name")
             return scrapy.FormRequest(url=request_url,
                                       formdata={field_name: keyword},
@@ -186,7 +189,8 @@ class WebsiteSpiderSpider(scrapy.Spider):
                                               meta={"search_info": self.search_keywords[search_index + 1],
                                                     "search_index": search_index + 1,
                                                     },
-                                              encoding=response.encoding)
+                                              # encoding=response.encoding
+                                              )
         elif result is True:
             yield scrapy.Request(url=self.website.book_info_page_url,
                                  meta={"search_info": self.search_keywords[search_index + 1],
@@ -223,99 +227,6 @@ class WebsiteSpiderSpider(scrapy.Spider):
                                  headers=constant.headers,
                                  callback=self.parse_content_page)
 
-    def find_search_site(self, response):
-        # search_info = dict()
-        # search_keyword = "完美世界"
-        # # 获取输入框xpath
-        # search_xpath = self.__get_search_input_box_path(response.text)
-        # if search_xpath == "":
-        #     print(f"获取search_xpath失败，url = {response.request.url}")
-        #     # 获取输入框xpath失败处理 TODO 可以使用selenium打开页面后重新获取完整页面进行解析
-        #     file_name = re.sub(u"([^\u4e00-\u9fa5\u0030-\u0039\u0041-\u005a\u0061-\u007a])", "",
-        #                        response.meta.get('title'))
-        #     with open(f"gen_book_rule/pages/{file_name}.html", "wb") as f:
-        #         f.write(response.body)
-        #     return search_info
-        # # print(search_xpath)
-        # request_method = "get"
-        # search_url = ""
-        # field_name = ""
-        # # 检测是否为表单提交，是表单提交则获取表单信息
-        # if "/form" in search_xpath:
-        #     form_xpath = f"{search_xpath.split('/form')[0]}/form"
-        #     # print(f"form_xpath = {form_xpath}")
-        #     result = self.get_html_element_info(response.text, f"{form_xpath}/@method")
-        #     if len(result) == 0:
-        #         request_method = "post"
-        #     else:
-        #         request_method = result[0]
-        #     result = self.get_html_element_info(response.text, f"{form_xpath}/@action")
-        #     if len(result) <= 0:
-        #         print("获取action url失败")
-        #         return search_info
-        #     search_url = self.get_full_url(response.request.url, result[0])
-        #     field_name = self.get_html_element_info(response.text, f"{search_xpath}/@name")
-        # else:
-        #     # 非表单提交处理
-        #     page = WebPage(url=response.request.url)
-        #     # 完整页面和原始页面有差别，进行定位需要使用各种属性完整定位或直接使用哦个完整页面进行解析
-        #     # 拼接出相对xpath定位元素
-        #     filter_list = list()
-        #     attr_list = ["type", "id", "value", "placeholder", "class", "name", "autocomplete"]
-        #     for attr in attr_list:
-        #         result = self.get_html_element_info(response.text, f"{search_xpath}/@{attr}")
-        #         if result:
-        #             filter_list.append(f"@{attr}='{result[0]}'")
-        #     result = self.get_html_element_info(response.text, f"{search_xpath}/@placeholder")
-        #     if result:
-        #         filter_list.append(f"@value='{result[0]}'")
-        #     full_xpath = f"//input[{' and '.join(filter_list)}]"
-        #     search_input_box = page.find_element(by=By.XPATH, value=full_xpath)
-        #     search_input_box.send_keys(search_keyword)
-        #     search_input_box.send_keys(Keys.ENTER)
-        #     new_url = page.current_url
-        #     # 查询参数判断
-        #     # print(parse_qs(urlsplit(new_url).query))
-        #     for key, value in parse_qs(urlsplit(new_url).query).items():
-        #         if value and value[0] == search_keyword:
-        #             field_name = key
-        #             break
-        #     # 路径参数判断
-        #     if field_name == "":
-        #         print(f"路径参数： url = {new_url}")
-        #         return search_info
-        #     # print(f"new_url = {new_url}")
-        # print(f"field_name = {field_name}, request_method = {request_method}, url = {search_url}")
-        # search_info = {"field_name": field_name, "method": request_method, "url": search_url}
-        # return search_info
-        pass
-
-    @staticmethod
-    def __get_search_input_box_path(html_text):
-        # type_list = ["text", "search"]
-        # for tag_type in type_list:
-        #     # 直接查找input标签
-        #     html = etree.HTML(html_text)
-        #     element_list = html.xpath(f"//input[@type='{tag_type}']")
-        #     if len(element_list) == 1:
-        #         tree = etree.ElementTree(element_list[0])
-        #         xpath_str = tree.getpath(element_list[0])
-        #         return xpath_str
-        #     # 标签数量不为一，查找form标签下所有的input标签
-        #     element_list = html.xpath(f"//form/*/input[@type='{tag_type}']")
-        #     if len(element_list) == 1:
-        #         tree = etree.ElementTree(element_list[0])
-        #         xpath_str = tree.getpath(element_list[0])
-        #         return xpath_str
-        #     elif len(element_list) > 1:
-        #         # input标签不唯一，对标签进行判断是不是是多个相同标签
-        #         if len(set(html.xpath(f"//form/*/input[@type='{tag_type}']/@name"))) == 1:
-        #             tree = etree.ElementTree(element_list[0])
-        #             xpath_str = tree.getpath(element_list[0])
-        #             return xpath_str
-        #     print(len(element_list))
-        return ""
-
     @staticmethod
     def get_html_element_info(html_text, xpath_str):
         html = etree.HTML(html_text)
@@ -349,8 +260,3 @@ class WebsiteSpiderSpider(scrapy.Spider):
         # 删除
         [self.novel_website_url_dict.pop(key) for key in del_key_list]
 
-    def __get_novel_website_url(self):
-        pass
-
-    def __get_novel_website_name(self):
-        pass

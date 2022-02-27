@@ -113,7 +113,12 @@ class WebsiteParse:
 
     def __parse_book_kind_rule(self):
         self.rule_dict["ruleBookInfo"]["kind"] = ""
-        pass
+        ele_list = get_html_element_info(self.detail_page,
+                                         "/html/body//*[starts-with(text(), '分类：') or starts-with(text(), '分 类：')]")
+        if len(ele_list) == 1:
+            self.rule_dict["ruleBookInfo"]["kind"] = get_full_xpath(ele_list[0])
+        else:
+            print("获取书籍详情页分类规则失败")
 
     def __parse_book_content_rule_new(self):
         """获取小说正文"""
@@ -179,6 +184,7 @@ class WebsiteParse:
 
     def __parse_book_content_rule(self):
         limit_rate = 0.3
+        limit_max_text_length = 1000
         exclude_tags = ["script", "style", "option", "img", "input"]
         max_node_dict = dict()
         for page in self.content_pages:
@@ -188,8 +194,6 @@ class WebsiteParse:
                 filter_list.append(f"not(name()='{tag}')")
             filter_str = " and ".join(filter_list)
             all_text_length = len("".join(get_html_element_info(page, f"/html/body//*[{filter_str}]/text()")))
-
-            print(f"all_text_length={all_text_length}")
             # 获取所有节点
             ele_list = get_html_element_info(page, f"/html/body//*[{filter_str}]")
             # 排除节点text为空的标签
@@ -205,20 +209,19 @@ class WebsiteParse:
                 content_xpath = ""
                 for ele in ele_list:
                     if index == 0:
-                        ele_text = ele.text
+                        ele_text = "".join(ele.xpath("./text()"))
                         ele_xpath = f"{get_full_xpath(ele)}/text()"
                     else:
                         # 获取父节点下对应标签的所有文本
                         full_xpath = get_full_xpath(ele)
-                        ele_xpath = f"{full_xpath}/{'../'*index}{'node()/'*(index-1)}{ele.tag}/text()"
+                        ele_xpath = f"{full_xpath}/{'../' * index}{'node()/' * (index - 1)}{ele.tag}/text()"
                         ele_text = "".join(get_html_element_info(page, ele_xpath))
                     if len(ele_text) > max_text_length:
                         max_text_length = len(ele_text)
                         content_xpath = ele_xpath
-                print(f"content_xpath={content_xpath}")
-                print(f"max_text_length={max_text_length}")
-                # 判断最长文本长度是否超过所有文本的指定比例
-                if max_text_length > all_text_length * limit_rate:
+                # 判断最长文本长度是否超过所有文本的指定比例,或者单个标签的文本超过对应限制
+                if max_text_length > all_text_length * limit_rate or (
+                        max_text_length > limit_max_text_length and index == 0):
                     if max_node_dict.get(content_xpath) is None:
                         max_node_dict[content_xpath] = 1
                     else:
@@ -232,6 +235,7 @@ class WebsiteParse:
         max_count = 0
         for xpath_str, num in max_node_dict.items():
             if num > max_count:
+                max_count = num
                 self.rule_dict["ruleContent"]["content"] = xpath_str
         return True
 
@@ -275,6 +279,7 @@ class WebsiteParse:
         upper_xpath = '//a/..'
         upper_nodes = get_html_element_info(self.chapter_list_page, upper_xpath)
         xpath_str = ""
+        p_xpath = ""
         for index in range(4):
             # 获取a标签最多的上级节点
             max_node, max_length, a_list, temp_xpath = self.get_max_num_node(index, upper_nodes)
@@ -286,12 +291,12 @@ class WebsiteParse:
                     select_node = a_list[int(a_length / 2) - 10:int(a_length / 2) + 10]
                     xpath_list = list()
                     for node in select_node:
-                        p_xpath = ''
+                        temp_xpath = ''
                         for _ in range(index):
                             node = node.getparent()
                             p_tag = node.tag
-                            p_xpath = f'{p_tag}/{p_xpath}' if p_xpath else p_tag
-                        xpath_list.append(f'/{p_xpath}')
+                            temp_xpath = f'{p_tag}/{p_xpath}' if temp_xpath else p_tag
+                        xpath_list.append(f'/{temp_xpath}')
                     t_xpath = Counter(xpath_list).most_common()[0][0]
                     xpath_str = f"{p_xpath}{t_xpath}/a"
                 else:
@@ -303,8 +308,19 @@ class WebsiteParse:
         else:
             print('get titles failed')
             return False
-        # TODO 需要去重，即前几张可能是最新章节，也就是最后几张
-        # ret = get_html_element_info(self.chapter_list_page, f'{xpath_str}/text()')
+        # 去重，即前几张可能是最新章节，也就是最后几张
+        title_list = get_html_element_info(self.chapter_list_page, f'{xpath_str}/text()')
+        ele_list = get_html_element_info(self.chapter_list_page, xpath_str)
+        counter_dict = Counter(title_list)
+        index = 0
+        for ele in ele_list:
+            if counter_dict.get(ele.text) > 1:
+                index += 1
+            else:
+                break
+        if index > 0:
+            # 获取对应去重之后的xpath，即重复章节不获取
+            xpath_str = f'{p_xpath}/{xpath_str.replace(f"{p_xpath}/", "").replace("/", f"[position()>{index}]/")}'
         self.rule_dict["ruleToc"]["chapterList"] = xpath_str
         self.rule_dict["ruleToc"]["chapterName"] = f'{xpath_str}/text()'
         self.rule_dict["ruleToc"]["chapterUrl"] = f'{xpath_str}/@href'
@@ -528,14 +544,14 @@ class WebsiteParse:
     def __parse_search_url_rule(self):
         """搜索url解析"""
         search_keyword = "完美世界"
-        # 获取输入框xpath
+        # 获取输入框xpath todo 还需要判断是否有其他字段
         search_xpath, is_selenium = self.__get_search_input_box_path(self.home_page)
         if is_selenium:
             # 通过selenium获取的xpath需要用对应的页面
             self.home_page = WebPage(self.url).find_element(by=By.XPATH, value="//html").parent.page_source
         if search_xpath == "":
             print(f"{self.title}, 获取输入框search_xpath失败，url = {self.url}")
-            # 获取输入框xpath失败处理 TODO 可以使用selenium打开页面后重新获取完整页面进行解析
+            # 获取输入框xpath失败处理
             file_name = re.sub(u"([^\u4e00-\u9fa5\u0030-\u0039\u0041-\u005a\u0061-\u007a])", "", self.title)
             with open(f"gen_book_rule/pages/{file_name}.html", "wb") as f:
                 f.write(self.home_page.encode("utf-8"))
